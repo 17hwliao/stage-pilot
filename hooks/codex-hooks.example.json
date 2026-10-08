@@ -1,0 +1,57 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "additionalContextLimit": 1000,
+            "command": "\"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "commandWindows": "& \"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "timeout": 5
+          }
+        ],
+        "matcher": "^(startup|resume|clear|compact)$"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "additionalContextLimit": 1000,
+            "command": "\"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "commandWindows": "& \"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "commandWindows": "& \"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "timeout": 5
+          }
+        ],
+        "matcher": "^auto$"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "commandWindows": "& \"<PYTHON_EXE>\" -X utf8 \"<SKILL_DIRECTORY>/scripts/compaction_reminder.py\" --state-dir \"<CODEX_HOME>/state/project-handoff\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
+  "description": "stage-pilot: 主要阶段完成后一次选择；压缩只计数；未展示提示最多补漏一次"
+}

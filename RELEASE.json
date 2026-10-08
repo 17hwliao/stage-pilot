@@ -1,0 +1,30 @@
+{
+  "name": "stage-pilot",
+  "display_name": "阶段领航 / Stage Pilot",
+  "version": "1.0.1",
+  "sole_author": "17hwliao",
+  "released": "2026-10-08",
+  "runtime_dependencies": [
+    "Python >= 3.10 standard library"
+  ],
+  "bundled_git_repository": false,
+  "bundled_third_party_source": false,
+  "files_sha256": {
+    "agents/openai.yaml": "6a08c801d2343f820e9f16392863877b47ddeeba10582a8c9f2a4e86c7a7bfd7",
+    "assets/handoff-template.md": "43b22637755b0bdc7be81f77c8a4c8d65f2bc973cd4978e010ee1a65aa44f2cb",
+    "AUTHOR.md": "cbe224b762819a36befd617d609519c0f5e0117b5ac64c7e97716d8c35e1b155",
+    "hooks/codex-hooks.example.json": "a5f50bd944d1e9e85659d6d1380b0333db939a07c5398b73c77c672283725b44",
+    "README.md": "ca09ec268489351c2af6dfd126e7c6a0874a9b43b23b4fb60baae5d0765f7b21",
+    "references/compaction-reminder.md": "03e40df01bfc733314b6c044ba51b7dd64658a4541b12690a63348cc819fcf1e",
+    "references/design.md": "04f54a387a048585f5c3c8b3fe62e24579f18777cdb81e32be366690962585f7",
+    "references/handoff.md": "ca96b6338fa51b1c6c3908675192d3903964140fc142332c8d391693aefe57cc",
+    "references/review.md": "845bb76c55c4156688f4d6b3e82d5ee57e0c748de6b20941872f01297f638bf1",
+    "references/stage-state.md": "c85389f7104bae31de7cd3016d2aa2434383694e8a1fc2c8494d1683ada64b47",
+    "scripts/compaction_reminder.py": "d65195b06dc0612a56c0f400151bf2513e39b152bf2d07c115420de4eab0046f",
+    "scripts/handoff_check.py": "d20465e0e88803c480c829bf653c4057e93f9fadaae83b1c1361464bc8b48f6d",
+    "scripts/stage_gate.py": "6efaa2d53c66cc609dd7d1c5b5925b6c0fd7bf2da4241bb6fe04daa4a395831f",
+    "SKILL.md": "31f36aaf60bc6ba665cf9c3e0fc6493fdb366f87d80312e6139307ce660077e9",
+    "tests/test_workflow.py": "fae3a6cc66e336ed24893badb97fdbaa3beaf751d8fe3136abf9c5eeec271c26"
+  },
+  "invocation_mode": "implicit_passive"
+}

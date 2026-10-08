@@ -1,0 +1,6 @@
+interface:
+  display_name: "阶段领航 · Stage Pilot"
+  short_description: "开发任务中被动触发，复用最低验收范围，主要阶段完成后一次选择Review或交接"
+  default_prompt: "使用 $stage-pilot 被动跟随当前开发任务，仅在主要阶段完成时提示一次Review或交接。"
+policy:
+  allow_implicit_invocation: true
