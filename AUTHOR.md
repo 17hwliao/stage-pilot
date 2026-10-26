@@ -1,11 +1,13 @@
-# 作者
+# Authorship
 
-名称：阶段领航 / Stage Pilot  
-调用名：stage-pilot  
-版本：1.0.1  
-唯一作者：17hwliao  
-发布日期：2026-10-08
+| | |
+| :--- | :--- |
+| Project | Stage Pilot |
+| Skill name | stage-pilot |
+| Version | 1.2.1 |
+| Author | 17hwliao |
+| Source updated | 2026-10-26 |
 
-本个人版本的工作流文档、脚本、模板与测试署名为 17hwliao。开发过程使用 AI 辅助。
-借鉴来源仅说明流程思路的参考，不列为本版本共同作者，也不主张拥有参考项目的作品。
-本包不包含参考项目源码、Git 仓库、子模块或 Git 历史。
+The workflow documents, scripts, templates, tests, and visual identity in this version are authored by 17hwliao with AI assistance.
+
+Referenced projects informed the workflow design. They are not listed as co-authors, and no ownership of their work is claimed. This distribution does not include their source code, submodules, repositories, or Git history.

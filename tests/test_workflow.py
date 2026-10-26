@@ -186,6 +186,151 @@ class StageWorkflow(unittest.TestCase):
         self.assertFalse(self.finish()["eligible"])
         self.assertEqual(self.action("status")["auto_compactions"], 1)
 
+    def test_mute_pending_offer_stops_retry_and_allows_next_phase(self):
+        self.plan()
+        result = self.finish()
+        self.action("mute", human_confirmed=True, approval_note="用户关闭本聊天提醒")
+        self.assertEqual(self.hook("Stop", last_assistant_message="提醒已关闭"), {})
+        self.assertEqual(self.action("status")["phase"]["status"], "dismissed")
+        with self.assertRaises(ValueError):
+            self.choose(result, "both")
+        self.action("resume", human_confirmed=True, approval_note="用户恢复提醒")
+        self.assertEqual(self.hook("Stop", last_assistant_message="已恢复"), {})
+        self.assertTrue(self.plan("module-b")["registered"])
+
+    def test_legacy_muted_pending_offer_does_not_retry(self):
+        self.plan()
+        self.finish()
+        path = gate.state_path(self.states, "session-a")
+        old = json.loads(path.read_text(encoding="utf-8"))
+        old["muted"] = True
+        path.write_text(json.dumps(old), encoding="utf-8")
+        self.assertEqual(self.hook("Stop", last_assistant_message="停止提示"), {})
+        self.assertEqual(self.action("status")["notice_count"], 0)
+
+    def test_single_criterion_is_accepted_without_padding(self):
+        self.action("plan", phase_key="single", title="独立模块", project_root=str(self.project),
+                    criteria=["满足唯一的完整行为契约"], confirmed=True)
+        result = self.action("complete", phase_key="single", checks=[
+            {"id": "c1", "status": "met", "evidence": "契约测试通过"}],
+            summary="已核实", safe=True, has_next=False)
+        self.assertTrue(result["eligible"])
+
+    def test_amend_keeps_history_and_invalidates_old_checks(self):
+        self.plan()
+        self.finish(status="unverified")
+        self.action("amend", phase_key="module-a", criteria=["改为离线也可恢复"],
+                    human_confirmed=True, approval_note="用户明确修改阶段范围")
+        phase = self.action("status")["phase"]
+        self.assertEqual(phase["status"], "active")
+        self.assertEqual(phase["revision"], 2)
+        self.assertIsNone(phase["checks"])
+        self.assertNotEqual(phase["criteria"][0]["id"], "c1")
+        full = gate.process(self.event, self.states, "status", full=True)
+        history = full["phase_gate"]["phases"]["module-a"]["revisions"]
+        self.assertEqual(history[0]["previous"]["criteria"][0]["id"], "c1")
+        self.assertEqual(history[0]["previous"]["checks"][1]["status"], "unverified")
+        with self.assertRaises(ValueError):
+            self.finish()
+
+    def test_amend_pending_invalidates_offer_without_repeating_prompt(self):
+        self.plan()
+        old = self.finish()
+        self.action("amend", phase_key="module-a", criteria=["新的真实行为"],
+                    human_confirmed=True, approval_note="用户明确修改验收条件")
+        self.assertEqual(self.hook("Stop", last_assistant_message="按新范围继续"), {})
+        with self.assertRaises(ValueError):
+            self.choose(old, "review")
+        criterion = self.action("status")["phase"]["criteria"][0]["id"]
+        result = self.action("complete", phase_key="module-a", checks=[
+            {"id": criterion, "status": "met", "evidence": "新契约通过"}],
+            summary="修改后的范围完成", safe=True, has_next=False)
+        self.assertFalse(result["eligible"])
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["why"], "already_offered")
+        self.assertTrue(self.plan("module-b")["registered"])
+
+    def test_scope_changes_require_human_authorization_and_are_atomic(self):
+        self.plan()
+        path = gate.state_path(self.states, "session-a")
+        original = path.read_bytes()
+        for action, data in [("amend", {"criteria": ["新的范围"]}), ("cancel", {}),
+                             ("amend", {"criteria": [], "human_confirmed": True,
+                                        "approval_note": "用户改变范围"})]:
+            with self.subTest(action=action, data=data), self.assertRaises(ValueError):
+                self.action(action, phase_key="module-a", **data)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_cancel_does_not_claim_completion_or_authorize_old_offer(self):
+        self.plan()
+        offer = self.finish()
+        self.action("cancel", phase_key="module-a", human_confirmed=True, approval_note="用户取消此阶段")
+        self.assertEqual(self.action("status")["phase"]["status"], "cancelled")
+        self.assertEqual(self.hook("Stop", last_assistant_message="已取消"), {})
+        with self.assertRaises(ValueError):
+            self.choose(offer, "both")
+        self.assertTrue(self.plan("module-b")["registered"])
+
+    def test_scope_cannot_change_after_handoff_dispatch(self):
+        self.plan()
+        self.choose(self.finish(), "handoff")
+        for step in ["saved", "created", "verified", "dispatched"]:
+            self.action("handoff-progress", phase_key="module-a", handoff_id="h1", status=step,
+                        target_thread_id="target-1" if step != "saved" else None, evidence="回执 " + step)
+        for action in ["amend", "cancel"]:
+            with self.subTest(action=action), self.assertRaises(ValueError):
+                self.action(action, phase_key="module-a", criteria=["新的范围"],
+                            human_confirmed=True, approval_note="用户改变范围")
+
+    def test_review_modes_are_explicit_and_result_cannot_switch_scope(self):
+        self.plan()
+        offer = self.finish()
+        with self.assertRaises(ValueError):
+            self.action("choose", phase_key="module-a", offer_id=offer["offer_id"], choice="review",
+                        review_mode="unknown", human_confirmed=True, approval_note="用户要求审查")
+        self.action("choose", phase_key="module-a", offer_id=offer["offer_id"], choice="review",
+                    review_mode="full", human_confirmed=True, approval_note="用户明确要求全量 Review")
+        with self.assertRaises(ValueError):
+            self.action("review-result", phase_key="module-a", summary="结果", mode="stage", verified=True)
+        self.action("review-result", phase_key="module-a", summary="全量审查及定向修复复核已完成",
+                    mode="full", verified=True)
+        self.assertEqual(self.action("status")["phase"]["review"]["mode"], "full")
+
+    def test_review_defaults_to_stage_for_old_requests(self):
+        self.plan()
+        self.choose(self.finish(), "review")
+        self.action("review-result", phase_key="module-a", summary="阶段修复复核完成", verified=True)
+        self.assertEqual(self.action("status")["phase"]["review"]["mode"], "stage")
+
+    def test_same_scope_amend_is_idempotent_and_preserves_evidence(self):
+        self.plan()
+        self.finish(status="unverified")
+        path = gate.state_path(self.states, "session-a")
+        original = path.read_bytes()
+        result = self.action("amend", phase_key="module-a", criteria=["正常输入能完成任务", "断网时仍能启动"],
+                             human_confirmed=True, approval_note="重复交付同一已确认范围")
+        self.assertFalse(result["amended"])
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_active_muting_does_not_complete_or_cancel_work(self):
+        self.plan()
+        self.action("mute", human_confirmed=True, approval_note="只关提醒，工作继续")
+        self.assertEqual(self.action("status")["phase"]["status"], "active")
+        with self.assertRaises(ValueError):
+            self.plan("module-b")
+        self.action("cancel", phase_key="module-a", human_confirmed=True, approval_note="随后用户取消工作")
+        self.assertTrue(self.plan("module-b")["registered"])
+
+    def test_invalid_criteria_cannot_replace_scope(self):
+        self.plan()
+        path = gate.state_path(self.states, "session-a")
+        original = path.read_bytes()
+        for criteria in [[], [""], ["重复", " 重复 "], ["目标"] * 6]:
+            with self.subTest(criteria=criteria), self.assertRaises(ValueError):
+                self.action("amend", phase_key="module-a", criteria=criteria,
+                            human_confirmed=True, approval_note="用户变更范围")
+            self.assertEqual(path.read_bytes(), original)
+
     def test_stop_receipt_excludes_examples_and_retries_once(self):
         self.plan()
         result = self.finish()
@@ -196,6 +341,123 @@ class StageWorkflow(unittest.TestCase):
         self.assertEqual(self.action("status")["notice_count"], 1)
         self.hook("Stop", last_assistant_message=result["notice"])
         self.assertEqual(self.action("status")["notice_count"], 1)
+
+    def start_review(self, request_id="review-full-1", mode="full", followup=False):
+        return self.action("review-start", phase_key="module-a", request_id=request_id,
+                           mode=mode, followup=followup, human_confirmed=True,
+                           approval_note="用户直接要求本轮审查／修复复核")
+
+    def test_direct_review_during_active_phase_does_not_complete_acceptance(self):
+        self.plan()
+        self.start_review()
+        self.assertFalse(self.finish()["eligible"])
+        self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                    mode="full", summary="全量审查完成，开发范围尚未完成", verified=True)
+        self.assertEqual(self.action("status")["phase"]["status"], "active")
+        self.assertTrue(self.finish()["eligible"])
+
+    def test_direct_full_review_resolves_pending_offer_without_second_prompt(self):
+        self.plan()
+        self.finish()
+        self.start_review()
+        self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                    summary="已执行全量审查和修复复核", verified=True)
+        self.assertEqual(self.hook("Stop", last_assistant_message="Review 完成"), {})
+        self.assertTrue(self.plan("module-b")["registered"])
+
+    def test_followup_preserves_full_scope_history_and_rejects_stale_result(self):
+        self.plan()
+        offer = self.finish()
+        self.action("choose", phase_key="module-a", offer_id=offer["offer_id"], choice="review",
+                    review_mode="full", human_confirmed=True, approval_note="全量 Review")
+        self.action("review-result", phase_key="module-a", mode="full", summary="发现真实问题", verified=True)
+        self.action("review-start", phase_key="module-a", request_id="followup-1", followup=True,
+                    human_confirmed=True, approval_note="复核上轮修复")
+        self.assertEqual(self.action("status")["phase"]["review_mode"], "full")
+        with self.assertRaises(ValueError):
+            self.action("review-result", phase_key="module-a", request_id="old-review", summary="旧回执", verified=True)
+        self.action("review-result", phase_key="module-a", request_id="followup-1", summary="定向复核通过", verified=True)
+        phase = gate.process(self.event, self.states, "status", full=True)["phase_gate"]["phases"]["module-a"]
+        self.assertTrue(phase["review"]["followup"])
+        self.assertEqual(phase["review_history"][0]["summary"], "发现真实问题")
+        self.assertFalse(self.start_review("followup-1", followup=True)["authorized"])
+
+    def test_explicit_scope_change_is_not_silently_treated_as_duplicate_choice(self):
+        self.plan()
+        offer = self.finish()
+        self.choose(offer, "review")
+        with self.assertRaises(ValueError):
+            self.action("choose", phase_key="module-a", offer_id=offer["offer_id"], choice="review",
+                        review_mode="full", human_confirmed=True, approval_note="这次要求全量")
+        self.start_review()
+        self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                    mode="full", summary="全量审查完成", verified=True)
+        self.assertEqual(self.action("status")["phase"]["status"], "reviewed")
+
+    def test_review_start_requires_human_choice_and_stable_request_scope(self):
+        self.plan()
+        path = gate.state_path(self.states, "session-a")
+        original = path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.action("review-start", phase_key="module-a", request_id="r1", mode="full")
+        self.assertEqual(path.read_bytes(), original)
+        self.start_review()
+        self.assertFalse(self.start_review()["authorized"])
+        with self.assertRaises(ValueError):
+            self.start_review(mode="stage")
+
+    def test_review_start_preserves_both_handoff_intent(self):
+        self.plan()
+        self.choose(self.finish(), "both")
+        self.start_review()
+        self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                    summary="全量审查完成", verified=True)
+        self.assertEqual(self.action("status")["phase"]["status"], "handoff_authorized")
+
+    def test_direct_review_cannot_reclaim_dispatched_handoff(self):
+        self.plan()
+        self.choose(self.finish(), "handoff")
+        for step in ["saved", "created", "verified", "dispatched"]:
+            self.action("handoff-progress", phase_key="module-a", handoff_id="h1", status=step,
+                        target_thread_id="target-1" if step != "saved" else None, evidence="回执 " + step)
+        with self.assertRaises(ValueError):
+            self.start_review()
+
+    def test_direct_review_then_stage_offer_remains_compatible_with_choose(self):
+        self.plan()
+        self.start_review()
+        self.action("review-result", phase_key="module-a", request_id="review-full-1", summary="中途全量审查完成", verified=True)
+        offer = self.finish()
+        self.assertNotIn("尚未执行 AI Review", offer["notice"])
+        self.choose(offer, "review")
+        with self.assertRaises(ValueError):
+            self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                        summary="前轮的迟到回执", verified=True)
+        self.action("review-result", phase_key="module-a", summary="新增阶段改动复核完成", verified=True)
+        self.assertEqual(self.action("status")["phase"]["review"]["mode"], "stage")
+
+    def test_amend_after_active_review_invalidates_old_review_scope(self):
+        self.plan()
+        self.start_review()
+        self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                    summary="旧范围全量审查完成", verified=True)
+        self.action("amend", phase_key="module-a", criteria=["新的用户契约"],
+                    human_confirmed=True, approval_note="用户改变阶段范围")
+        phase = gate.process(self.event, self.states, "status", full=True)["phase_gate"]["phases"]["module-a"]
+        self.assertNotIn("review", phase)
+        self.assertNotIn("review_request", phase)
+        self.assertEqual(phase["revisions"][0]["previous"]["review"]["summary"], "旧范围全量审查完成")
+
+    def test_stale_result_cannot_overwrite_a_new_direct_request(self):
+        self.plan()
+        self.start_review()
+        self.start_review("review-stage-2", mode="stage")
+        with self.assertRaises(ValueError):
+            self.action("review-result", phase_key="module-a", request_id="review-full-1",
+                        mode="full", summary="前轮回执", verified=True)
+        self.action("review-result", phase_key="module-a", request_id="review-stage-2",
+                    summary="当前范围结果", verified=True)
+        self.assertEqual(self.action("status")["phase"]["status"], "active")
 
     def test_legacy_state_preserves_counts_and_cancels_count_trigger(self):
         self.states.mkdir()
@@ -311,6 +573,24 @@ class HandoffDocument(unittest.TestCase):
         path = self.document()
         self.append(path, '```handoff-meta\n{"id":"other"}\n```\napi_key: synthetic-other')
         self.assertTrue(checker.validate(path, record_id="h1")["valid"])
+        with self.assertRaises(ValueError):
+            checker.validate(path)
+
+    def test_selected_record_survives_unrelated_malformed_metadata(self):
+        path = self.document()
+        self.append(path, '```handoff-meta\n{invalid-json}\n```\n历史损坏记录')
+        self.assertTrue(checker.validate(path, record_id="h1")["valid"])
+        with self.assertRaises(ValueError):
+            checker.validate(path)
+
+    def test_selected_record_survives_unrelated_non_object_metadata(self):
+        path = self.document()
+        self.append(path, '```handoff-meta\n[]\n```\n历史记录')
+        self.assertTrue(checker.validate(path, record_id="h1")["valid"])
+
+    def test_single_non_object_metadata_fails_cleanly(self):
+        path = self.root / "invalid.md"
+        path.write_text('```handoff-meta\n[]\n```\n', encoding="utf-8")
         with self.assertRaises(ValueError):
             checker.validate(path)
 

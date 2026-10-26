@@ -14,9 +14,9 @@ if os.name == "nt":
 else:
     import fcntl
 
-TERMINAL = {"continued", "closed", "reviewed", "handed_off"}
+TERMINAL = {"continued", "closed", "reviewed", "handed_off", "dismissed", "cancelled"}
 EVENTS = {"SessionStart", "UserPromptSubmit", "PostCompact", "Stop"}
-ACTIONS = {"hook", "status", "plan", "complete", "choose", "review-result", "handoff-progress", "mute", "resume"}
+ACTIONS = {"hook", "status", "plan", "amend", "cancel", "complete", "choose", "review-start", "review-result", "handoff-progress", "mute", "resume"}
 
 
 @contextmanager
@@ -95,7 +95,8 @@ def summary(state):
             "muted": state.get("muted", False), "notice_count": gate["notice_count"],
             "phase": ({k: phase.get(k) for k in
                        ("key", "title", "project_root", "criteria", "checks", "status",
-                        "offer_id", "has_next", "next_action", "choice", "review", "handoff")}
+                        "offer_id", "has_next", "next_action", "choice", "review", "handoff",
+                        "revision", "review_mode", "review_request")}
                       if phase else None)}
 
 
@@ -105,27 +106,40 @@ def require_human(data):
     return text_arg(data.get("approval_note"), "approval_note")
 
 
+def criteria_arg(criteria):
+    if not isinstance(criteria, list) or not 1 <= len(criteria) <= 5:
+        raise ValueError("use 1 to 5 acceptance criteria")
+    criteria = [text_arg(c, "criterion", 180) for c in criteria]
+    if len(set(criteria)) != len(criteria):
+        raise ValueError("duplicate acceptance criteria")
+    return criteria
+
+
+def archive_review(phase):
+    previous = phase.pop("review", None)
+    if previous:
+        phase.setdefault("review_history", []).append(previous)
+
+
 def mutate(state, action, data, turn):
     gate = state["phase_gate"]
     if action in {"mute", "resume"}:
         note = require_human(data)
         state["muted"] = action == "mute"
         gate["reminder_preference"] = {"turn": turn, "action": action, "note": note}
+        phase = gate["phases"].get(gate["current"])
+        if action == "mute" and phase and phase["status"] == "awaiting_choice":
+            phase.update(status="dismissed", dismissal={"turn": turn, "note": note})
         return {"muted": state["muted"]}
     if action == "plan":
         key = text_arg(data.get("phase_key"), "phase_key", 80)
         title = text_arg(data.get("title"), "title", 80)
         project = Path(text_arg(data.get("project_root"), "project_root", 1000))
-        criteria = data.get("criteria")
         if data.get("confirmed") is not True:
             raise ValueError("minimum acceptance scope must be established with the user")
         if not project.is_absolute() or not project.is_dir():
             raise ValueError("project_root must be an existing absolute directory")
-        if not isinstance(criteria, list) or not 2 <= len(criteria) <= 5:
-            raise ValueError("use 2 to 5 acceptance criteria")
-        criteria = [text_arg(c, "criterion", 180) for c in criteria]
-        if len(set(criteria)) != len(criteria):
-            raise ValueError("duplicate acceptance criteria")
+        criteria = criteria_arg(data.get("criteria"))
         files = data.get("related_files", [])
         if not isinstance(files, list) or len(files) > 12:
             raise ValueError("related_files must contain at most 12 paths")
@@ -143,7 +157,7 @@ def mutate(state, action, data, turn):
                  "task": str(data.get("task", ""))[:240], "baseline": data.get("baseline"),
                  "related_files": files,
                  "criteria": [{"id": "c" + str(i + 1), "text": c}
-                              for i, c in enumerate(criteria)], "status": "active"}
+                              for i, c in enumerate(criteria)], "status": "active", "revision": 1}
         gate["phases"][key] = phase
         gate["current"] = key
         ended = [k for k, p in gate["phases"].items()
@@ -152,6 +166,63 @@ def mutate(state, action, data, turn):
             del gate["phases"][stale]
         return {"registered": True, "phase": phase}
     phase = current(state, data.get("phase_key"))
+    if action == "review-start":
+        note = require_human(data)
+        request_id = text_arg(data.get("request_id"), "request_id", 80)
+        followup = data.get("followup", False)
+        if type(followup) is not bool:
+            raise ValueError("followup must be a boolean")
+        mode = data.get("mode", phase.get("review_mode", "stage") if followup else "stage")
+        if mode not in {"stage", "full"}:
+            raise ValueError("mode must be stage or full")
+        previous_request = phase.get("review_request")
+        if previous_request and previous_request["id"] == request_id:
+            if previous_request["mode"] != mode or previous_request["followup"] != followup:
+                raise ValueError("same review request cannot change scope or purpose")
+            return {"authorized": False, "already_recorded": True, "status": phase["status"]}
+        allowed = {"active", "awaiting_choice", "continued", "closed", "reviewed", "dismissed",
+                   "review_authorized", "review_then_handoff", "handoff_authorized"}
+        if phase["status"] not in allowed:
+            raise ValueError("cannot start Review here; verify ownership or cancellation first")
+        return_status = phase["status"]
+        if return_status == "review_authorized":
+            return_status = (previous_request or {}).get("return_status", "reviewed")
+        elif return_status == "review_then_handoff":
+            return_status = "handoff_authorized"
+        elif return_status == "awaiting_choice":
+            return_status = "reviewed"
+        archive_review(phase)
+        phase.update(status="review_authorized", review_mode=mode,
+                     review_request={"id": request_id, "mode": mode, "followup": followup,
+                                     "turn": turn, "note": note, "return_status": return_status})
+        return {"authorized": True, "mode": mode, "followup": followup, "status": phase["status"]}
+    if action in {"amend", "cancel"}:
+        note = require_human(data)
+        if action == "cancel" and phase["status"] == "cancelled":
+            return {"cancelled": False, "already_recorded": True}
+        allowed = {"active", "awaiting_choice"}
+        if action == "cancel":
+            allowed |= {"review_authorized", "review_then_handoff", "handoff_authorized", "handoff_in_progress"}
+        if phase["status"] not in allowed or (phase.get("handoff") or {}).get("rank", -1) >= 3:
+            raise ValueError("phase cannot change in this state; verify ownership after dispatch")
+        if action == "cancel":
+            phase.update(status="cancelled", cancellation={"turn": turn, "note": note})
+            return {"cancelled": True, "status": phase["status"]}
+        criteria = criteria_arg(data.get("criteria"))
+        if criteria == [c["text"] for c in phase["criteria"]]:
+            return {"amended": False, "already_exists": True, "revision": phase.get("revision", 1)}
+        previous = {k: v for k, v in phase.items() if k not in {"revisions"}}
+        revision = phase.get("revision", 1) + 1
+        already_offered = phase.get("offer_issued", bool(phase.get("offer_id")))
+        history = phase.setdefault("revisions", [])
+        history.append({"turn": turn, "note": note, "previous": previous})
+        for field in ("checks", "summary", "has_next", "next_action", "benefit", "allow_handoff",
+                      "offer_id", "choices", "notice", "offer_turn", "delivered", "retry_used", "delivery_unknown",
+                      "review", "review_mode", "review_request"):
+            phase.pop(field, None)
+        phase.update(status="active", revision=revision, offer_issued=already_offered,
+                     criteria=[{"id": f"r{revision}-c{i + 1}", "text": c} for i, c in enumerate(criteria)])
+        return {"amended": True, "revision": revision, "phase": phase}
     if action == "complete":
         if phase["status"] != "active":
             return {"eligible": False, "why": "already_evaluated", "status": phase["status"]}
@@ -183,15 +254,19 @@ def mutate(state, action, data, turn):
         if state.get("muted"):
             phase["status"] = "continued" if has_next else "closed"
             return {"eligible": False, "why": "muted", "completed": True}
+        if phase.get("offer_issued"):
+            phase["status"] = "continued" if has_next else "closed"
+            return {"eligible": False, "why": "already_offered", "completed": True}
         choices = ["continue", "review"] if has_next else ["close", "review"]
         if allow_handoff:
             choices += ["handoff", "both"]
         options = ("继续／仅 Review／保存交接并在同项目正确目录新建、打开、核对后继续／先 Review 后交接"
                    if allow_handoff else "继续／仅 Review" if has_next else "结束／仅 Review")
+        review_note = "已有 Review 记录，覆盖范围以记录为准。" if phase.get("review") else "本次尚未执行 AI Review。"
         notice = (f"阶段检查：{phase['title']}的最低标准已满足（{len(clean)}/{len(clean)}）。"
-                  f"{description} 本次尚未执行 AI Review。请选择：{options}。")
+                  f"{description} {review_note}请选择：{options}。")
         offer = hashlib.sha256((state["session_id"] + ":" + phase["key"]).encode()).hexdigest()[:24]
-        phase.update(status="awaiting_choice", offer_id=offer, choices=choices,
+        phase.update(status="awaiting_choice", offer_id=offer, choices=choices, offer_issued=True,
                      notice=notice, offer_turn=turn, delivered=False, retry_used=False)
         return {"eligible": True, "offer_id": offer, "notice": notice,
                 "auto_compactions": state["auto_count"]}
@@ -202,10 +277,19 @@ def mutate(state, action, data, turn):
         choice = data.get("choice")
         if phase["status"] != "awaiting_choice":
             if phase.get("choice") == choice:
+                if choice in {"review", "both"} and data.get("review_mode", "stage") != phase.get("review_mode", "stage"):
+                    raise ValueError("new Review scope requires an explicit review-start request")
                 return {"authorized": False, "already_recorded": True, "status": phase["status"]}
             raise ValueError("offer already answered")
         if choice not in phase["choices"]:
             raise ValueError("choice not available for this completed stage")
+        if choice in {"review", "both"}:
+            mode = data.get("review_mode", "stage")
+            if mode not in {"stage", "full"}:
+                raise ValueError("review_mode must be stage or full")
+            archive_review(phase)
+            phase.pop("review_request", None)
+            phase["review_mode"] = mode
         phase.update(choice=choice, approval={"turn": turn, "note": note})
         phase["status"] = {"continue": "continued", "close": "closed",
                            "review": "review_authorized", "handoff": "handoff_authorized",
@@ -217,9 +301,21 @@ def mutate(state, action, data, turn):
             raise ValueError("Review has not been authorized or is already recorded")
         if data.get("verified") is not True:
             raise ValueError("record an actual completed review, not an intention")
+        mode = phase.get("review_mode", "stage")
+        if data.get("mode", mode) != mode:
+            raise ValueError("review result must match the authorized scope")
+        request = phase.get("review_request")
+        if request and data.get("request_id") != request["id"]:
+            raise ValueError("review result must match the current request_id")
+        if not request and data.get("request_id") is not None:
+            raise ValueError("stale direct Review result cannot replace a stage-choice Review")
         phase["review"] = {"summary": text_arg(data.get("summary"), "review summary", 600),
-                           "turn": turn}
-        phase["status"] = "handoff_authorized" if phase["choice"] == "both" else "reviewed"
+                           "turn": turn, "mode": mode}
+        if request:
+            phase["review"].update(request_id=request["id"], followup=request["followup"])
+            phase["status"] = request["return_status"]
+        else:
+            phase["status"] = "handoff_authorized" if phase["choice"] == "both" else "reviewed"
         return {"recorded": True, "status": phase["status"]}
     if action == "handoff-progress":
         if phase["status"] not in {"handoff_authorized", "handoff_in_progress"}:
@@ -275,7 +371,7 @@ def hook(state, event):
         state["active_turn_id"] = turn
     phase = gate["phases"].get(gate["current"])
     if name == "Stop":
-        if (not phase or phase["status"] != "awaiting_choice" or phase.get("delivered") or
+        if (state.get("muted") or not phase or phase["status"] != "awaiting_choice" or phase.get("delivered") or
                 not turn or turn != phase.get("offer_turn")):
             return {}
         if final_contains_notice(event.get("last_assistant_message"), phase["notice"]):

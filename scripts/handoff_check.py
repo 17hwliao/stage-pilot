@@ -64,9 +64,20 @@ def validate(path, record_id=None, check_git=False):
         raise ValueError("handoff carrier too large; use a bounded current-record file")
     document = path.read_text(encoding="utf-8-sig")
     matches = list(re.finditer(r"^```handoff-meta\s*\n(.*?)\n```\s*$", document, re.M | re.S))
-    records = [(match, json.loads(match.group(1))) for match in matches]
-    if record_id:
-        records = [(m, meta) for m, meta in records if meta.get("id") == record_id]
+    records = []
+    for match in matches:
+        try:
+            meta = json.loads(match.group(1))
+        except ValueError:
+            if record_id:
+                continue
+            raise ValueError("invalid handoff-meta JSON") from None
+        if not isinstance(meta, dict):
+            if record_id:
+                continue
+            raise ValueError("handoff-meta must be a JSON object")
+        if not record_id or meta.get("id") == record_id:
+            records.append((match, meta))
     if len(records) != 1:
         raise ValueError("select exactly one handoff-meta record, using --record-id if needed")
     match, meta = records[0]

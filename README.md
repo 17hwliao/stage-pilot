@@ -1,37 +1,159 @@
-# 阶段领航 / Stage Pilot
+<p align="center">
+  <img src="assets/logo.svg" width="88" height="88" alt="Stage Pilot logo" />
+</p>
 
-唯一作者：**17hwliao**。版本：**1.0.1**。
+<h1 align="center">Stage Pilot</h1>
 
-约定阶段的最低验收范围，完成后轻量核对，一次选择继续、仅 Review、交接或 Review 后交接。
-Review 必须有明确选择；完整交接包含保存材料、在原项目正确目录新建聊天、核对接续并打开。
-项目整体结束或切换没有具体收益时，不提供交接选项。
+<p align="center"><strong>Clear stages. Focused reviews. Reliable handoffs.</strong></p>
 
-## 使用
+<p align="center">
+  A compact workflow skill for Codex.<br />
+  Define the scope, finish the stage, and choose the next step.
+</p>
 
-默认被动触发，无需输入技能名或发送启用指令。正常提出开发任务即可，例如：`帮我开发自动更新模块，本阶段先支持检查版本、下载和失败提示。`
-Agent 在适用的开发场景自动采用流程，已有要求直接提取为标准；缺失时只补问验收范围。持续开发期间保持安静，主要阶段完成后才给一次选择。
-普通问答、小修和讨论本 Skill 不产生阶段提醒。自动发现由宿主和模型选择机制支持，并不保证每次调用；本版本没有新增常驻监听、定时轮询或模型调用。
-新安装后若技能列表未刷新，请新开聊天或重启 Codex。也可显式输入 `$stage-pilot`。
+<p align="center">
+  <img alt="Version 1.2.1" src="https://img.shields.io/badge/version-1.2.1-111111?style=flat-square" />
+  <img alt="Python 3.10 or newer" src="https://img.shields.io/badge/python-3.10%2B-555555?style=flat-square" />
+  <img alt="Python standard library" src="https://img.shields.io/badge/runtime-standard_library-777777?style=flat-square" />
+</p>
 
-显式请求：`使用 $stage-pilot 保存当前进度。` 只保存；
-`使用 $stage-pilot 保存交接，在同一项目当前目录新建、打开聊天，核对后继续。` 才执行完整接续。
-讨论 Skill 本身、纯问答和普通小修不建立阶段。
+<p align="center">
+  <a href="#quick-start">Quick start</a> &nbsp;·&nbsp;
+  <a href="#review-with-context">Review</a> &nbsp;·&nbsp;
+  <a href="#handoff-with-continuity">Handoff</a> &nbsp;·&nbsp;
+  <a href="#under-the-hood">Under the hood</a>
+</p>
 
-## 安装和迁移
+---
 
-解压整个 stage-pilot 目录到 `<CODEX_HOME>/skills/stage-pilot`。不要把备份目录放入 skills。
-运行文件只有本包资源，没有第三方仓库、子模块或在线依赖。
-Python 脚本仅用标准库；如需 Hook，按 [配置模板](hooks/codex-hooks.example.json) 替换路径并通过宿主的信任流程。
-Skill 本身可在没有 Hook 的情况下使用；压缩计数和自动提示送达核验此时为未知。
+Stage Pilot keeps multi-step development grounded in an agreed acceptance scope. It stays quiet during implementation, offers one decision when a major stage is complete, and preserves the context needed to continue.
 
-当前机器迁移时保留原 hooks.json 的命令和信任记录；旧 project-handoff 目录仅留 Hook 转发入口，
-转到本 Skill。状态继续存入 `.codex/state/project-handoff`，保留已有计数和历史，路径名不影响新调用名。
-在其他机器按模板直接指向 stage-pilot，无须创建兼容目录。
+| Define | Review | Continue |
+| :--- | :--- | :--- |
+| Reuse the requirements and acceptance criteria you already have. | Inspect a stage or the whole project, confirm real issues, and verify focused fixes. | Keep working in the current chat or explicitly hand off to a new one. |
 
-## 验证与限制
+## Quick start
 
-运行 `python -X utf8 -m unittest discover -s tests -v` 验证状态机、去重、授权边界和交接结构校验。
-模拟测试不证明宿主已经自动发现 Skill、实际触发 Hook 或自动接续成功；这些需在真实项目中验证。
-没有实时上下文百分比接口，不猜测占用率。凭据检测只覆盖常见模式；Agent 保存前仍需核对内容。
+Place the repository contents in your personal skill directory:
 
-作者信息见 [AUTHOR.md](AUTHOR.md)，借鉴说明见 [设计与来源](references/design.md)。
+```text
+<CODEX_HOME>/skills/stage-pilot/
+├── SKILL.md
+├── agents/
+├── assets/
+├── hooks/
+├── references/
+├── scripts/
+└── tests/
+```
+
+When `CODEX_HOME` is unset, use `~/.codex`. Open a new chat if the skill list has not refreshed.
+
+Then describe the work naturally:
+
+```text
+Build the version-checking module. For this stage, support checking for
+updates, downloading the package, and reporting download failures.
+```
+
+You can also invoke `$stage-pilot` explicitly. Implicit invocation is enabled, but selection depends on the host and model; it is not a guaranteed background service.
+
+### One stage, one decision
+
+```text
+Agree scope → Implement → Check acceptance → Choose the next step
+                                              ├─ Continue
+                                              ├─ Review
+                                              ├─ Handoff
+                                              └─ Review, then hand off
+```
+
+Existing requirements are reused. Missing acceptance details are clarified only when they matter. Questions, small fixes, and discussion of the skill itself do not create development stages. A handoff is offered only when there is more work and a concrete benefit to changing chats.
+
+## Review with context
+
+Two review scopes share one process:
+
+| Scope | What it covers | Example request |
+| :--- | :--- | :--- |
+| **Stage review** · default | Current-stage changes, relevant callers, shared contracts, and affected boundaries. | “Review this stage.” |
+| **Full-project review** · explicit | Major entry points, module relationships, data flow, shared state, conflicting features, and code defects. | “Run a full-project review.” |
+
+The initial assessment follows six steps:
+
+```text
+Prepare → Review by layer → Run focused checks
+        → Summarize risks → Propose fixes → Confirm the issues exist
+```
+
+Confirmed, in-scope defects receive minimal fixes and targeted verification. Read-only, plan-only, or design-before-implementation instructions take precedence. Optional refactoring, new features, public contract changes, and data migrations need their own scope and authorization.
+
+### Verify the fix, then conclude
+
+After either review scope, verification follows the original issue list and the repair diff:
+
+- Confirm that the original failure is resolved.
+- Check affected callers and shared state for new regressions.
+- Recheck the relevant boundaries and high-risk paths.
+- Run the small set of automated tests needed to support the conclusion.
+- Report the evidence, remaining issues, and coverage limits.
+
+“Verify the previous fixes” requests this follow-up. It does **not** start another complete project review. Broader inspection happens only when new evidence shows that the impact extends beyond the original scope.
+
+Full-project reviews can also suggest internal cleanup, such as consolidating duplicate implementations or clarifying state ownership. Suggestions include the reason, a migration approach, and the behavior to protect; they are not silently implemented.
+
+## Handoff with continuity
+
+The wording determines the action:
+
+| Request | Result |
+| :--- | :--- |
+| “Save the current progress.” | Save context in the project's existing state document; do not create a chat. |
+| “Save a handoff, create and open a new chat in this project directory, then verify and continue.” | Run the complete handoff sequence using the host's available tools. |
+
+```text
+Save → Validate → Create → Verify the receiving chat → Dispatch → Confirm takeover
+```
+
+The receiving chat first checks the directory, handoff identity, artifacts, and authorization in read-only mode. Work continues after the source chat has recorded the handoff and sent the continuation instruction. An uncertain result is checked before retrying, and the same receiving chat is reused.
+
+Missing host tools, an unmatched project directory, or inaccessible materials are reported as gaps. A created chat is not reported as a successful takeover.
+
+## Under the hood
+
+The model interprets requirements and evidence. Small Python helpers record state transitions and validate handoff structure; they cannot independently prove that acceptance criteria or human authorization are genuine.
+
+| Component | Responsibility |
+| :--- | :--- |
+| [`SKILL.md`](SKILL.md) | Invocation boundaries, stage decisions, review routing, and handoff policy. |
+| [`stage_gate.py`](scripts/stage_gate.py) | Per-chat stage state, explicit choices, review requests, deduplication, and ordered handoff progress. |
+| [`handoff_check.py`](scripts/handoff_check.py) | Selected-record structure, explicit file references, and common credential patterns. |
+| [`references/`](references/) | Detailed procedures, loaded when needed. These references currently use Chinese. |
+
+An explicit scope amendment retains the stage identity and historical scope while invalidating old acceptance evidence and review results. Cancellation records a cancellation, not a successful completion. Muting dismisses pending prompts without authorizing review or handoff; the script's preference is local to the chat.
+
+Direct reviews and later verification requests use stable request identities. Late results cannot overwrite a newer request, and an interim review cannot mark an unfinished development stage as accepted.
+
+### Optional lifecycle hooks
+
+The skill works without hooks. For event tracking and prompt-delivery checks, adapt the [hook configuration template](hooks/codex-hooks.example.json) to your machine and use the host's normal trust flow.
+
+The configured events are `SessionStart`, `UserPromptSubmit`, automatic `PostCompact`, and `Stop`. Normal events process short local JSON. Automatic compactions are counted, but the count does not estimate context usage or trigger a handoff. `Stop` can request one continuation only for a valid, pending stage prompt that was omitted.
+
+Legacy installations may keep the `project-handoff` forwarding entry and state directory. New installations can point the template directly at this skill. Keep backup skill folders outside the discovery directory.
+
+## Validation
+
+The helper scripts use **Python 3.10+ and the standard library**. Run the tests from the skill directory:
+
+```sh
+python -B -X utf8 -m unittest discover -s tests -v
+```
+
+The suite covers stage transitions, scope amendments, authorization boundaries, review requests, stale-result protection, prompt deduplication, handoff sequencing, and selected-record validation. `RELEASE.json` records resource hashes for source-integrity checks; it does not create a GitHub Release.
+
+Passing these checks does not establish host-level skill discovery, real lifecycle delivery, or a successful cross-chat handoff. Coverage gaps remain explicit. Credential matching is limited to common patterns and does not replace a content review.
+
+---
+
+Created by **[17hwliao](https://github.com/17hwliao)**. See [authorship](AUTHOR.md) and [design references](references/design.md).
